@@ -1,6 +1,10 @@
 const express = require('express');
 const cors = require('cors');
 const { Sequelize, DataTypes } = require('sequelize');
+const bcrypt = require('bcryptjs'); // Para encriptar contraseñas
+const jwt = require('jsonwebtoken'); // Para crear el JWT
+const bodyParser = require('body-parser'); // Para procesar los datos enviados en JSON
+const verificarToken = require('./middlewares/verificarToken'); // Importar el middleware
 
 // Crear la aplicación express
 const app = express();
@@ -8,9 +12,7 @@ const port = 5000;
 
 // Usamos CORS para permitir todas las solicitudes
 app.use(cors());
-
-// Middleware para poder recibir datos en formato JSON
-app.use(express.json());
+app.use(bodyParser.json()); // Para procesar JSON
 
 // Configuración de Sequelize para la base de datos PostgreSQL
 const sequelize = new Sequelize('icfesdb', 'postgres', 'Linares33*', {
@@ -22,10 +24,28 @@ const sequelize = new Sequelize('icfesdb', 'postgres', 'Linares33*', {
 sequelize.authenticate()
   .then(() => {
     console.log('Conexión a la base de datos establecida correctamente.');
-    // Sincronizar los modelos con la base de datos
     sequelize.sync();  // Aquí sincronizamos todos los modelos
   })
   .catch(err => console.error('No se pudo conectar a la base de datos:', err));
+
+// Definir el modelo de usuario (para la autenticación)
+const Usuario = sequelize.define('Usuario', {
+  nombre: {
+    type: DataTypes.STRING,
+    allowNull: false,
+  },
+  correo: {
+    type: DataTypes.STRING,
+    allowNull: false,
+    unique: true,
+  },
+  contrasena: {
+    type: DataTypes.STRING,
+    allowNull: false,
+  }
+}, {
+  timestamps: false,  // Desactiva la creación de los campos createdAt y updatedAt
+});
 
 // Definir el modelo para la tabla 'estudiantes'
 const Estudiante = sequelize.define('Estudiante', {
@@ -84,8 +104,63 @@ app.get('/', (req, res) => {
   res.send('Bienvenido a la API del ICFES');
 });
 
-// Ruta para agregar un estudiante
-app.post('/add-estudiante', async (req, res) => {
+// Ruta para registrar un usuario
+app.post('/register', async (req, res) => {
+  const { nombre, correo, contrasena } = req.body;
+
+  try {
+    // Verificar si el usuario ya existe
+    const usuarioExistente = await Usuario.findOne({ where: { correo } });
+    if (usuarioExistente) {
+      return res.status(400).json({ mensaje: 'Usuario ya existe' });
+    }
+
+    // Encriptar la contraseña
+    const hashedPassword = await bcrypt.hash(contrasena, 10);
+
+    // Crear un nuevo usuario
+    const usuario = await Usuario.create({
+      nombre,
+      correo,
+      contrasena: hashedPassword,
+    });
+
+    res.status(201).json({ mensaje: 'Usuario registrado correctamente', usuario });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ mensaje: 'Error al registrar usuario' });
+  }
+});
+
+// Ruta para hacer login
+app.post('/login', async (req, res) => {
+  const { correo, contrasena } = req.body;
+
+  try {
+    // Buscar el usuario en la base de datos
+    const usuario = await Usuario.findOne({ where: { correo } });
+    if (!usuario) {
+      return res.status(400).json({ mensaje: 'Usuario no encontrado' });
+    }
+
+    // Comparar la contraseña con la almacenada
+    const esValida = await bcrypt.compare(contrasena, usuario.contrasena);
+    if (!esValida) {
+      return res.status(400).json({ mensaje: 'Contraseña incorrecta' });
+    }
+
+    // Generar un JWT
+    const token = jwt.sign({ id: usuario.id, correo: usuario.correo }, 'mi_secreto', { expiresIn: '1h' });
+
+    res.status(200).json({ mensaje: 'Login exitoso', token });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ mensaje: 'Error en el login' });
+  }
+});
+
+// Ruta para agregar un estudiante (requiere autenticación)
+app.post('/add-estudiante', verificarToken, async (req, res) => {
   const { nombre, correo, fecha_nacimiento } = req.body;
 
   try {
@@ -102,11 +177,8 @@ app.post('/add-estudiante', async (req, res) => {
   }
 });
 
-
-
-
-// Ruta para agregar un simulacro
-app.post('/add-simulacro', async (req, res) => {
+// Ruta para agregar un simulacro (requiere autenticación)
+app.post('/add-simulacro', verificarToken, async (req, res) => {
   const { nombre, descripcion, fecha } = req.body;
 
   try {
@@ -124,10 +196,8 @@ app.post('/add-simulacro', async (req, res) => {
   }
 });
 
-
-
-// Ruta para agregar un resultado
-app.post('/add-resultado', async (req, res) => {
+// Ruta para agregar un resultado (requiere autenticación)
+app.post('/add-resultado', verificarToken, async (req, res) => {
   const { estudiante_id, simulacro_id, puntaje } = req.body;
 
   try {
@@ -143,9 +213,6 @@ app.post('/add-resultado', async (req, res) => {
     res.status(500).send('Error al agregar resultado');
   }
 });
-
-
-
 
 // Obtener todos los resultados de un estudiante
 app.get('/resultados-estudiante/:id', async (req, res) => {
@@ -178,10 +245,6 @@ app.get('/resultados-simulacro/:id', async (req, res) => {
     res.status(500).send('Error al obtener los resultados del simulacro');
   }
 });
-
-
-
-
 
 // Iniciar el servidor
 app.listen(port, () => {
